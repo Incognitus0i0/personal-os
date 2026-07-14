@@ -2386,16 +2386,72 @@ const MEDIA_CONFIGS = {
   filmai:{label:"Movies",statusOpts:["Watching","Watched","Want to watch"],defaultStatus:"Want to watch",searchPlaceholder:"Search movie title...",extraField:null},
   zaidimai:{label:"Games",statusOpts:["Playing","Played","Want to play"],defaultStatus:"Want to play",searchPlaceholder:"Search game title...",extraField:"platform"},
 };
-const INIT_MEDIA = {
-  knygos:[{id:1,title:"The Memory Police",author:"Yoko Ogawa",year:1994,genre:"Literary fiction",status:"Read",rating:5,pages:192,pagesRead:192,notes:"Strange and quiet."},{id:2,title:"Exhalation",author:"Ted Chiang",year:2019,genre:"Science fiction",status:"Read",rating:5,pages:352,pagesRead:352,notes:""},{id:3,title:"The Creative Act",author:"Rick Rubin",year:2023,genre:"Non-fiction",status:"Reading",rating:0,pages:432,pagesRead:118,notes:""},{id:4,title:"Project Hail Mary",author:"Andy Weir",year:2021,genre:"Science fiction",status:"Want to read",rating:0,pages:476,pagesRead:0,notes:""}],
-  filmai:[{id:1,title:"Dune: Part Two",director:"Denis Villeneuve",year:2024,genre:"Sci-fi",status:"Watched",rating:5,notes:"Visually stunning."},{id:2,title:"Past Lives",director:"Celine Song",year:2023,genre:"Drama",status:"Watched",rating:5,notes:""},{id:3,title:"The Brutalist",director:"Brady Corbet",year:2024,genre:"Drama",status:"Want to watch",rating:0,notes:""}],
-  zaidimai:[{id:1,title:"Elden Ring",platform:"PC",year:2022,genre:"Action RPG",status:"Played",rating:5,notes:"Best game in years."},{id:2,title:"Hollow Knight",platform:"PC",year:2017,genre:"Metroidvania",status:"Playing",rating:5,notes:"60% completion."},{id:3,title:"Disco Elysium",platform:"PC",year:2019,genre:"RPG",status:"Want to play",rating:0,notes:""}],
-};
-const FAKE_SEARCH = {
-  knygos:[{title:"Piranesi",author:"Susanna Clarke",year:2020,genre:"Fantasy",pages:272},{title:"Klara and the Sun",author:"Kazuo Ishiguro",year:2021,genre:"Literary fiction",pages:307}],
-  filmai:[{title:"Anora",director:"Sean Baker",year:2024,genre:"Drama"},{title:"Nosferatu",director:"Robert Eggers",year:2024,genre:"Horror"}],
-  zaidimai:[{title:"Black Myth: Wukong",platform:"PC",year:2024,genre:"Action RPG"},{title:"Balatro",platform:"PC",year:2024,genre:"Roguelike"}],
-};
+
+async function searchMedia(moduleId, query, keys) {
+  if(moduleId==="knygos") {
+    const res = await fetch("https://www.googleapis.com/books/v1/volumes?maxResults=8&q="+encodeURIComponent(query));
+    if(!res.ok) throw new Error("Google Books request failed");
+    const data = await res.json();
+    return (data.items||[]).map(it=>{
+      const v=it.volumeInfo||{};
+      return {
+        title: v.title||"Untitled",
+        author: (v.authors||[]).join(", "),
+        year: v.publishedDate?parseInt(v.publishedDate.slice(0,4)):null,
+        genre: (v.categories||[])[0]||"",
+        pages: v.pageCount||0,
+        cover: v.imageLinks?.thumbnail?.replace("http://","https://")||null,
+      };
+    });
+  }
+  if(moduleId==="filmai") {
+    if(!keys.tmdb) throw new Error("__nokey__tmdb");
+    const res = await fetch("https://api.themoviedb.org/3/search/movie?query="+encodeURIComponent(query)+"&api_key="+keys.tmdb);
+    if(!res.ok) throw new Error("TMDB request failed");
+    const data = await res.json();
+    return (data.results||[]).slice(0,8).map(m=>({
+      title: m.title,
+      director: "",
+      year: m.release_date?parseInt(m.release_date.slice(0,4)):null,
+      genre: "",
+      cover: m.poster_path?"https://image.tmdb.org/t/p/w200"+m.poster_path:null,
+    }));
+  }
+  if(moduleId==="zaidimai") {
+    if(!keys.rawg) throw new Error("__nokey__rawg");
+    const res = await fetch("https://api.rawg.io/api/games?key="+keys.rawg+"&search="+encodeURIComponent(query)+"&page_size=8");
+    if(!res.ok) throw new Error("RAWG request failed");
+    const data = await res.json();
+    return (data.results||[]).map(g=>({
+      title: g.name,
+      platform: (g.platforms||[]).slice(0,2).map(p=>p.platform.name).join(", ")||"—",
+      year: g.released?parseInt(g.released.slice(0,4)):null,
+      genre: (g.genres||[])[0]?.name||"",
+      cover: g.background_image||null,
+    }));
+  }
+  return [];
+}
+
+function MediaApiKeysNotice({moduleId, onSave}) {
+  const [val, setVal] = useState("");
+  const label = moduleId==="filmai" ? "TMDB API key" : "RAWG API key";
+  const url   = moduleId==="filmai" ? "themoviedb.org/settings/api" : "rawg.io/apidocs";
+  return (
+    <div style={{background:"#FAFAFA",border:"1px solid #E8E8E8",borderRadius:10,padding:14,marginBottom:16}}>
+      <div style={{fontSize:12.5,color:"#3A3530",lineHeight:1.6,marginBottom:10}}>
+        To search real {moduleId==="filmai"?"movies":"games"}, add your free {label} (get one at {url}). Stored only in this browser.
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <input className="t-form-input" style={{marginBottom:0,flex:1}} placeholder={label}
+          value={val} onChange={e=>setVal(e.target.value)}
+          onKeyDown={e=>{ if(e.key==="Enter"&&val.trim()) onSave(val.trim()); }}/>
+        <button className="t-btn-save" onClick={()=>{ if(val.trim()) onSave(val.trim()); }}>Save</button>
+      </div>
+    </div>
+  );
+}
+
 
 function StarRating({value,onChange}) {
   const [hover,setHover]=useState(0);
@@ -2408,26 +2464,81 @@ function MediaView({moduleId,filter}) {
   const [search,setSearch]=useState("");
   const [searchRes,setSearchRes]=useState([]);
   const [searching,setSearching]=useState(false);
+  const [searchErr,setSearchErr]=useState(null); // null | "nokey" | "error" | "empty"
+  const [keys,setKeys]=useState({
+    tmdb: localStorage.getItem("tmdb_api_key")||"",
+    rawg: localStorage.getItem("rawg_api_key")||"",
+  });
   const [filterSt,setFilterSt]=useState("All");
   const [expandedId,setExpandedId]=useState(null);
   const [addingDaily,setAddingDaily]=useState(null);
   const [dailyPages,setDailyPages]=useState("");
-  const doSearch=()=>{if(!search.trim())return;setSearching(true);setTimeout(()=>{const res=FAKE_SEARCH[moduleId]||[];setSearchRes(res.length?res:[{__empty:true}]);setSearching(false);},400);};
-  const addFromSearch=res=>{const base={id:crypto.randomUUID(),status:cfg.defaultStatus||cfg.statusOpts[cfg.statusOpts.length-1],rating:0,notes:""};const item=moduleId==="knygos"?{...base,...res,pagesRead:0}:{...base,...res};setItems(is=>[item,...is]);setSearch("");setSearchRes([]);};
+
+  const saveKey = (which, val) => {
+    localStorage.setItem(which+"_api_key", val);
+    setKeys(k=>({...k, [which]:val}));
+  };
+
+  const doSearch = async () => {
+    if(!search.trim()) return;
+    setSearching(true); setSearchErr(null); setSearchRes([]);
+    try {
+      const res = await searchMedia(moduleId, search.trim(), keys);
+      setSearchRes(res);
+      if(res.length===0) setSearchErr("empty");
+    } catch(e) {
+      if(String(e.message).startsWith("__nokey__")) setSearchErr("nokey");
+      else setSearchErr("error");
+    }
+    setSearching(false);
+  };
+
+  const addFromSearch=res=>{
+    const {cover, ...rest} = res;
+    const base={id:crypto.randomUUID(),status:cfg.defaultStatus||cfg.statusOpts[cfg.statusOpts.length-1],rating:0,notes:"",cover:cover||""};
+    const item=moduleId==="knygos"?{...base,...rest,pagesRead:0}:{...base,...rest};
+    setItems(is=>[item,...is]);setSearch("");setSearchRes([]);setSearchErr(null);
+  };
   const update=(id,patch)=>setItems(is=>is.map(i=>i.id===id?{...i,...patch}:i));
   const del=id=>setItems(is=>is.filter(i=>i.id!==id));
   const logPages=id=>{const n=Number(dailyPages);if(!n)return;setItems(is=>is.map(i=>i.id===id?{...i,pagesRead:Math.min(i.pages,i.pagesRead+n)}:i));setDailyPages("");setAddingDaily(null);};
   const visible=items.filter(i=>filterSt==="All"||i.status===filterSt);
+
   return (<div>
     <div style={{display:"flex",gap:8,marginBottom:16}}>
       <input className="cap-input" style={{marginBottom:0,flex:1}} placeholder={cfg.searchPlaceholder} value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doSearch();}}/>
       <button className="t-btn-save" onClick={doSearch}>{searching?"…":"Search"}</button>
     </div>
+
+    {searchErr==="nokey"&&<MediaApiKeysNotice moduleId={moduleId} onSave={v=>{ saveKey(moduleId==="filmai"?"tmdb":"rawg", v); setSearchErr(null); }}/>}
+
+    {searchErr==="error"&&(
+      <div style={{background:"#FEE8E8",border:"1px solid #F0C0C0",borderRadius:10,padding:14,marginBottom:16,fontSize:12.5,color:"#A03030"}}>
+        Search failed — please check your connection and try again.
+      </div>
+    )}
+
+    {searchErr==="empty"&&(
+      <div style={{background:"#FAFAFA",border:"1px solid #E8E8E8",borderRadius:10,padding:14,marginBottom:16,fontSize:12.5,color:"#A0A0A0",textAlign:"center"}}>
+        No results for "{search}"
+      </div>
+    )}
+
     {searchRes.length>0&&(<div style={{background:"#FAFAFA",border:"1px solid #E8E8E8",borderRadius:10,padding:12,marginBottom:16}}>
-      <div style={{fontSize:10,fontWeight:600,letterSpacing:".1em",textTransform:"uppercase",color:"#A0A0A0",marginBottom:10}}>Results <span style={{fontWeight:400,textTransform:"none",letterSpacing:0}}>(demo data — real API in production version)</span></div>
-      {searchRes.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 0",borderTop:i>0?"1px solid #F0F0F0":"none"}}><div style={{flex:1}}><div style={{fontSize:13.5,color:"#2A2520",fontWeight:500}}>{r.title}</div><div style={{fontSize:12,color:"#A0A0A0",marginTop:2}}>{r.author||r.director||r.platform} · {r.year} · {r.genre}</div></div><button className="t-btn-save" style={{padding:"5px 14px",fontSize:12}} onClick={()=>addFromSearch(r)}>+ Add</button></div>))}
-      <div className="crm-add-inline" style={{marginTop:8,paddingTop:8,borderTop:"1px solid #F0F0F0"}} onClick={()=>setSearchRes([])}>Close</div>
+      <div style={{fontSize:10,fontWeight:600,letterSpacing:".1em",textTransform:"uppercase",color:"#A0A0A0",marginBottom:10}}>Results</div>
+      {searchRes.map((r,i)=>(<div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 0",borderTop:i>0?"1px solid #F0F0F0":"none"}}>
+        {r.cover
+          ? <img src={r.cover} alt="" style={{width:32,height:46,objectFit:"cover",borderRadius:3,flexShrink:0,background:"#EEE"}}/>
+          : <div style={{width:32,height:46,borderRadius:3,flexShrink:0,background:"#EEE"}}/>}
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:13.5,color:"#2A2520",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.title}</div>
+          <div style={{fontSize:12,color:"#A0A0A0",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{[r.author||r.director||r.platform, r.year, r.genre].filter(Boolean).join(" · ")}</div>
+        </div>
+        <button className="t-btn-save" style={{padding:"5px 14px",fontSize:12,flexShrink:0}} onClick={()=>addFromSearch(r)}>+ Add</button>
+      </div>))}
+      <div className="crm-add-inline" style={{marginTop:8,paddingTop:8,borderTop:"1px solid #F0F0F0"}} onClick={()=>{setSearchRes([]);setSearchErr(null);}}>Close</div>
     </div>)}
+
     <div style={{display:"flex",gap:6,marginBottom:20,flexWrap:"wrap"}}>
       {["All",...cfg.statusOpts].map(s=>(<button key={s} className={`chip${filterSt===s?" on":""}`} onClick={()=>setFilterSt(s)}>{s}</button>))}
     </div>
@@ -2437,6 +2548,9 @@ function MediaView({moduleId,filter}) {
         const prog=moduleId==="knygos"&&item.pages>0?item.pagesRead/item.pages:null;
         return (<div key={item.id} style={{background:"#FAFAFA",border:"1px solid #E8E8E8",borderRadius:10,overflow:"hidden"}}>
           <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",cursor:"pointer"}} onClick={()=>setExpandedId(isOpen?null:item.id)}>
+            {item.cover
+              ? <img src={item.cover} alt="" style={{width:36,height:52,objectFit:"cover",borderRadius:4,flexShrink:0,background:"#EEE"}}/>
+              : <div style={{width:36,height:52,borderRadius:4,flexShrink:0,background:"#EEE"}}/>}
             <div style={{flex:1,minWidth:0}}>
               <div style={{fontSize:14,fontWeight:500,color:"#1A1815",marginBottom:3}}><InlineEdit value={item.title} onChange={v=>update(item.id,{title:v})} style={{fontWeight:500}}/></div>
               <div style={{fontSize:12,color:"#A0A0A0",display:"flex",gap:8,flexWrap:"wrap"}}>
